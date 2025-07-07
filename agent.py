@@ -14,44 +14,36 @@ The agent uses LangGraph to define a simple conversation flow.
 import os
 from dotenv import load_dotenv
 
-from langchain.chat_models import init_chat_model
-from langchain_tavily import TavilySearch
 from langchain.schema.runnable import RunnableConfig
 
 from langgraph.graph import StateGraph, START
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.memory import MemorySaver
 
+from llm import get_llm
 from state import State
 import datetime
+
+from tools import get_tools
 
 # Load environment variables
 load_dotenv(override=True)
 
-def get_tools():
-    tools = [
-        TavilySearch(max_results=2)
-    ]
-    return tools
-
-llm = init_chat_model(
-    "azure_openai:gpt-4.1-nano",
-    azure_deployment=os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME"),
-    api_version=os.environ.get("AZURE_OPENAI_API_VERSION"),
-)
-
 tools = get_tools()
-llm_with_tools = llm.bind_tools(tools)
+llm = get_llm(tools)
 
-def chatbot(state: State):
-    return {
-        "messages": [llm_with_tools.invoke(state["messages"])],
-    }
+def chatbot_node(state: State):
+    message = llm.invoke(state["messages"])
+    # Because we will be interrupting during tool execution,
+    # we disable parallel tool calling to avoid repeating any
+    # tool invocations when we resume.
+    assert len(message.tool_calls) <= 1 # type: ignore
+    return {"messages": [message]}
 
 def main():
     memory = MemorySaver()
     graph_builder = StateGraph(State)
-    graph_builder.add_node("chatbot", chatbot)
+    graph_builder.add_node("chatbot", chatbot_node)
 
     tool_node = ToolNode(tools=tools)
     graph_builder.add_node("tools", tool_node)
@@ -85,7 +77,7 @@ def main():
             else:
                 # The config is the **second positional argument** to stream() or invoke()!
                 events = graph.stream(
-                    {"messages": [{"role": "user", "content": user_input}]},
+                    {"messages": [{"role": "user", "content": user_input}]}, # type: ignore
                     config,
                     stream_mode="values",
                 )
